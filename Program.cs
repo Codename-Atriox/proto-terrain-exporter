@@ -2,6 +2,7 @@
 using System.Drawing;
 using System.Numerics;
 using static Infinite_module_test.tag_structs;
+using static System.Formats.Asn1.AsnWriter;
 
 namespace infinite_proto_terrain_exporter{
     internal class Program{
@@ -197,49 +198,53 @@ namespace infinite_proto_terrain_exporter{
             // for now we're going to make each pixel into a quad, but we'll smooth it out later when we confirm the best method
             Bitmap? heightmap = out_bitmaps[0];
             if (heightmap == null) throw new Exception("cant export heightmap if there is no heightmap");
+            
 
-            float nphd = 0.5f / heightmap.Width;
+            // setup vert maps
+            int[,] pixel_indicies = new int[heightmap.Width, heightmap.Height];
+            for (int x = 0; x < heightmap.Width; x++)
+                for (int y = 0; y < heightmap.Height; y++)
+                    pixel_indicies[x, y] = -1;
 
             List<Vector3> vertices = new();
             List<Vector2> UVs = new();
-            List<quad> indices = new();
-            for (int x = 0; x < heightmap.Width; x++){
-                for (int y = 0; y < heightmap.Height; y++){
-                    
-                    // get height value
-                    var pixel = heightmap.GetPixel(x, y);
-                    float height = ((pixel.R / 255.0f) * scale.Z);
+            List<tri> indices = new();
+            // ignore the last indexes as we're only trying to draw quads, so we only need to use the last indicies on the index prior
+            for (int x = 0; x < heightmap.Width-1; x++){
+                for (int y = 0; y < heightmap.Height-1; y++){
 
-                    // dont create quad if has no height
-                    if (height <= 0.0f) continue;
-                    height += position.Z; // incase this is negative and goes below the 0 point (@forest)
-                    // add the indices
-                    indices.Add(new(vertices.Count, vertices.Count + 1, vertices.Count + 2, vertices.Count + 3));
 
-                    float normalized_x = (float)x / heightmap.Width;
-                    float normalized_y = (float)y / heightmap.Height;
+                    // return height, pos & UV for [i..i+1][i..i+1] verts (4 verts)
+                    // v1 v2
+                    // v3 v4
+                    vert v1 = get_vertex(heightmap, x, y, scale, position);
+                    vert v2 = get_vertex(heightmap, x+1, y, scale, position);
+                    vert v3 = get_vertex(heightmap, x, y+1, scale, position);
+                    vert v4 = get_vertex(heightmap, x+1, y+1, scale, position);
 
-                    // add the UV position verticies
-                    float norm_pos_x = normalized_x+nphd;
-                    float norm_neg_x = normalized_x-nphd;
-                    float norm_pos_y = normalized_y+nphd;
-                    float norm_neg_y = normalized_y-nphd;
-                    UVs.Add(new(norm_pos_x, norm_pos_y));
-                    UVs.Add(new(norm_pos_x, norm_neg_y));
-                    UVs.Add(new(norm_neg_x, norm_pos_y));
-                    UVs.Add(new(norm_neg_x, norm_neg_y));
+                    // if 1,2,3 are valid, then the 1st triangle is valid
+                    if (v1.height != null && v2.height != null && v3.height != null){
+                        tri tri = new tri();
+                        // check each one to see if we've added it before
+                        tri.v1 = get_or_set_vert(x  ,y  , v1, pixel_indicies, vertices, UVs);
+                        tri.v2 = get_or_set_vert(x+1,y  , v2, pixel_indicies, vertices, UVs);
+                        tri.v3 = get_or_set_vert(x,  y+1, v3, pixel_indicies, vertices, UVs);
+                        indices.Add(tri);
+                    }
+                    // if 2,3,4 are valid, then the 2nd triangle is valid
+                    if (v2.height != null && v3.height != null && v4.height != null){
+                        tri tri = new tri();
+                        // check each one to see if we've added it before
+                        tri.v3 = get_or_set_vert(x+1, y  , v2, pixel_indicies, vertices, UVs);
+                        tri.v2 = get_or_set_vert(x  , y+1, v3, pixel_indicies, vertices, UVs);
+                        tri.v1 = get_or_set_vert(x+1, y+1, v4, pixel_indicies, vertices, UVs);
+                        indices.Add(tri);
+                    }
 
-                    // add the world position vertices
-                    float w_pos_x = (norm_pos_x * scale.X) + position.X;
-                    float w_neg_x = (norm_neg_x * scale.X) + position.X;
-                    float w_pos_y = (norm_pos_y * scale.Y) + position.Y;
-                    float w_neg_y = (norm_neg_y * scale.Y) + position.Y;
-                    vertices.Add(new(w_pos_x, w_pos_y, height));
-                    vertices.Add(new(w_pos_x, w_neg_y, height));
-                    vertices.Add(new(w_neg_x, w_pos_y, height));
-                    vertices.Add(new(w_neg_x, w_neg_y, height));
 
-            }}
+
+                }
+            }
 
             // now convert to obj file
             using (StreamWriter writer = File.CreateText(out_folder + "\\mesh.obj")){
@@ -257,18 +262,51 @@ namespace infinite_proto_terrain_exporter{
                 foreach (var v in indices)
                     writer.WriteLine("f " + (v.v1+1) + "/" + (v.v1+1) + " " +
                                           + (v.v2+1) + "/" + (v.v2+1) + " " +
-                                          + (v.v4+1) + "/" + (v.v4+1) + " " +
                                           + (v.v3+1) + "/" + (v.v3+1));
             }
 
         }
-        struct quad{
-            public quad(int _1, int _2, int _3, int _4){
-                v1 = _1; v2 = _2; v3 = _3; v4 = _4;}
+        struct tri{
+            //public tri(int _1, int _2, int _3){
+            //    v1 = _1; v2 = _2; v3 = _3;}
             public int v1;
             public int v2;
             public int v3;
-            public int v4;
+        }
+        struct vert{
+            public vert(Vector2 _pos, Vector2 _UV, float? _height) {
+                pos = _pos; UV = _UV; height = _height;}
+            public Vector2 pos;
+            public Vector2 UV;
+            public float? height;
+        }
+        static vert get_vertex(Bitmap? heightmap, int x, int y, Vector3 scale, Vector3 position){
+            // get height value
+            var pixel = heightmap.GetPixel(x, y);
+            float? height = ((pixel.R / 255.0f) * scale.Z);
+
+            if (height <= 0.0f) height = null;
+            else height += position.Z; 
+                                  
+
+            float normalized_x = (float)x / heightmap.Width;
+            float normalized_y = (float)y / heightmap.Height;
+
+            // add the world position vertices
+            float world_x = (normalized_x * scale.X) + position.X;
+            float world_y = (normalized_y * scale.Y) + position.Y;
+
+            return new(new(world_x, world_y), new(normalized_x, normalized_y), height);
+        }
+
+        static int get_or_set_vert(int x, int y, vert v, int[,] pixel_indicies, List<Vector3> vertices, List<Vector2> UVs){
+            if (pixel_indicies[x,y] == -1){ // v3
+                int index = vertices.Count;
+                pixel_indicies[x,y] = index;
+                vertices.Add(new(v.pos.X, v.pos.Y, (float)v.height));
+                UVs.Add(new(v.UV.X, v.UV.Y));
+                return index;
+            } else return pixel_indicies[x, y];
         }
     }
 }
